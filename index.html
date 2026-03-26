@@ -1,0 +1,387 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <title>Generative Art: Flawless Silhouette</title>
+    <style>
+        /* --- CSS STİLLERİ --- */
+        body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden; /* Yanlarda kaydırma çubuğu çıkmasın */
+            /* Arka plana kağıt dokusu hissi veren radyal geçiş */
+            background: radial-gradient(circle at center, #fffefb 0%, #f0ebe5 100%);
+            display: flex;
+            justify-content: center; /* Canvas'ı ortala */
+            align-items: center;
+        }
+        canvas {
+            display: block;
+            /* Resme sanatsal bir dokunuş için kontrast ve doygunluk ayarı */
+            filter: contrast(1.1) saturate(0.9);
+        }
+        /* Sol altta teknik bilgi gösteren yazı */
+        #debugInfo {
+            position: absolute;
+            bottom: 15px;
+            left: 15px;
+            font-family: 'Courier New', monospace;
+            font-size: 11px;
+            color: #aaa;
+            pointer-events: none; /* Tıklamayı engelle */
+        }
+    </style>
+</head>
+<body>
+
+<div id="debugInfo">
+    Math: Parametric Bézier Curves<br>
+    Render: Single Path Fill
+</div>
+<canvas id="artCanvas"></canvas>
+
+<script>
+    // Canvas kurulumu
+    const canvas = document.getElementById('artCanvas');
+    const ctx = canvas.getContext('2d');
+
+    let width, height;
+    let frameCount = 0; // Animasyonun zaman sayacı (her karede artacak)
+
+    // --- 1. MATEMATİKSEL FORMÜL (GELİŞMİŞ TEKNİK) ---
+    // Bu fonksiyon, hazır bezierCurveTo yerine kendi yazdığımız matematiksel eğri hesaplayıcısıdır.
+    // t (zaman/konum), p0 (başlangıç), p1-p2 (kontrol noktaları), p3 (bitiş)
+    function calculateBezierPoint(t, p0, p1, p2, p3) {
+        let u = 1 - t;    // t'nin tersi
+        let tt = t * t;   // t kare
+        let uu = u * u;   // u kare
+        let uuu = uu * u; // u küp
+        let ttt = tt * t; // t küp
+
+        // Bernstein Polinomları formülü: B(t) = (1-t)^3*P0 + ...
+        let p = uuu * p0;         // Başlangıç noktasının etkisi
+        p += 3 * uu * t * p1;     // İlk kontrol noktasının eğriye etkisi
+        p += 3 * u * tt * p2;     // İkinci kontrol noktasının eğriye etkisi
+        p += ttt * p3;            // Bitiş noktasının etkisi
+        return p;                 // Sonuç koordinatı döndür
+    }
+
+    // --- 2. RESİM YÜKLEME VE İŞLEME ---
+    let processedWomanImg = null; // İşlenmiş resim burada tutulacak
+    const rawImg = new Image();
+    rawImg.src = 'kiz.png'; // Resim dosyasının yolu
+
+    // Resim yüklendiğinde çalışacak blok
+    rawImg.onload = function() {
+        // Resmi işlemek için geçici (sanal) bir canvas oluşturuyoruz
+        const tCan = document.createElement('canvas');
+        const tCtx = tCan.getContext('2d');
+        tCan.width = rawImg.width;
+        tCan.height = rawImg.height;
+        tCtx.drawImage(rawImg, 0, 0); // Resmi sanal canvas'a çiz
+        
+        // Resmin her pikselini tek tek alıyoruz (RGBA verisi)
+        const imgData = tCtx.getImageData(0, 0, rawImg.width, rawImg.height);
+        for (let i = 0; i < imgData.data.length; i += 4) {
+            // R, G, B değerlerini al
+            const r = imgData.data[i], g = imgData.data[i+1], b = imgData.data[i+2];
+            // Eğer piksel beyaza çok yakınsa (arkaplan ise) onu şeffaf yap
+            if (r > 230 && g > 230 && b > 230) imgData.data[i+3] = 0; // Alpha = 0 (Görünmez)
+        }
+        tCtx.putImageData(imgData, 0, 0); // Değiştirilmiş pikselleri geri koy
+        processedWomanImg = tCan; // Ana animasyonda kullanmak üzere kaydet
+        animate(); // Her şey hazır, animasyonu başlat
+    };
+    // Resim yüklenemezse hata vermesin, animasyon yine de çalışsın
+    rawImg.onerror = () => animate();
+
+    // Ekran boyutu değişirse canvas'ı yeniden boyutlandıran fonksiyon
+    function resize() {
+        width = canvas.width = window.innerWidth;
+        height = canvas.height = window.innerHeight;
+    }
+    window.addEventListener('resize', resize);
+    resize();
+
+    // --- 3. KAMERA SİSTEMİ (SİNEMATİK ETKİ) ---
+    // Kameranın o an ne yaptığını belirten durumlar (State Machine mantığı)
+    const CAM_STATES = { SEARCH: 0, ZOOM_IN: 1, FOLLOW: 2, ZOOM_OUT: 3 };
+    let camera = { x: 0, y: 0, zoom: 1.0, state: CAM_STATES.SEARCH, timer: 0 };
+
+    // Hedef noktaya (targetX, targetY) göre kamerayı günceller
+    function updateCamera(targetX, targetY) {
+        let targetZoom = 1.0;
+        switch(camera.state) {
+            case CAM_STATES.SEARCH: // Kuşu bekleme modu
+                targetZoom = 1.0;
+                camera.timer++;
+                if(camera.timer > 50) { camera.state = CAM_STATES.ZOOM_IN; camera.timer = 0; }
+                break;
+            case CAM_STATES.ZOOM_IN: // Kuşa doğru yaklaşma (Zoom yapma)
+                targetZoom = 1.4;
+                // 'Lerp' (Linear Interpolation) ile yumuşak geçiş
+                camera.x += (targetX - camera.x) * 0.05;
+                camera.y += (targetY - camera.y) * 0.05;
+                if(Math.abs(camera.zoom - 1.4) < 0.05) camera.state = CAM_STATES.FOLLOW;
+                break;
+            case CAM_STATES.FOLLOW: // Kuşu yakından takip etme
+                targetZoom = 1.4;
+                camera.x += (targetX - camera.x) * 0.08; // Daha sıkı takip
+                camera.y += (targetY - camera.y) * 0.08;
+                camera.timer++;
+                // Belirli süre sonra uzaklaş
+                if(camera.timer > 180) { camera.state = CAM_STATES.ZOOM_OUT; camera.timer = 0; }
+                break;
+            case CAM_STATES.ZOOM_OUT: // Genel görünüme geri dönme
+                targetZoom = 1.0;
+                camera.x += (0 - camera.x) * 0.05; // Merkeze dön
+                camera.y += (0 - camera.y) * 0.05;
+                break;
+        }
+        // Zoom değerini her karede yumuşakça değiştir
+        camera.zoom += (targetZoom - camera.zoom) * 0.02;
+    }
+
+    // --- 4. KUŞ SINIFI (YARATICILIK VE GELİŞMİŞ TEKNİK KISMI) ---
+    class MathBird {
+        constructor() { this.reset(); }
+        
+        // Kuşu en başa (ekran dışına) alma
+        reset() {
+            this.x = -150; // Soldan başla
+            this.y = height * 0.35;
+            this.speed = 3.8; // Kuşun hızı
+            this.wingCycle = 0; // Kanat çırpma döngüsü (Math.sin için açı)
+            this.scale = 0.6; // Kuşun boyutu
+            // Kamera uzaktaysa ve kuş başa döndüyse, kamera döngüsünü de sıfırla
+            if (camera.state === CAM_STATES.ZOOM_OUT) {
+                camera.state = CAM_STATES.SEARCH;
+                camera.timer = 0;
+            }
+        }
+
+        // Pozisyon güncelleme (Her karede çalışır)
+        update() {
+            this.x += this.speed; // İleri git
+            this.y += Math.sin(frameCount * 0.02) * 0.6; // Hafif süzülme efekti (Y ekseninde salınım)
+            this.wingCycle += 0.08; // Kanat hareketini ilerlet
+            if (this.x > width + 150) this.reset(); // Ekrandan çıkınca başa dön
+        }
+
+        // --- ÖZEL FONKSİYON: SÜREKLİ YOL (CONTINUOUS PATH) ---
+        // Bu fonksiyon moveTo yapmaz, sadece lineTo ile devam eder.
+        // Böylece şekil asla kopmaz.
+        addBezierCurveToPath(ctx, startX, startY, cp1x, cp1y, cp2x, cp2y, endX, endY) {
+            const segments = 20; // Eğriyi oluşturan küçük çizgi sayısı (Hassasiyet)
+            for (let i = 1; i <= segments; i++) {
+                let t = i / segments;
+                // Yukarıdaki matematik formülünü kullanarak noktaları bul
+                let bx = calculateBezierPoint(t, startX, cp1x, cp2x, endX);
+                let by = calculateBezierPoint(t, startY, cp1y, cp2y, endY);
+                ctx.lineTo(bx, by); // Noktaları birleştir
+            }
+        }
+
+        draw() {
+            ctx.save(); // Ayarları kaydet
+            ctx.translate(this.x, this.y); // Kuşun olduğu yere git
+            ctx.rotate(Math.sin(frameCount * 0.02) * 0.05); // Hafif gövde dönüşü
+            ctx.scale(this.scale, this.scale); // Boyutlandır
+            
+            ctx.fillStyle = '#000000'; // Renk: Tam Siyah Silüet
+
+            let t = this.wingCycle;
+            // Kanat uçlarının ve dirseklerin koordinatlarını Sinüs dalgasıyla hesapla
+            // Bu kısım "Yaratıcılık" bölümünün temelidir.
+            let tipY = Math.sin(t) * 25 - 5; 
+            let elbowY = Math.sin(t) * 8 - 10; 
+            let wingSpan = 95; // Kanat genişliği
+            let elbowX = 45;
+            
+            // --- ÇİZİM BAŞLIYOR (Tek Parça) ---
+            ctx.beginPath();
+            
+            // 1. Kalemi kağıda koyduğumuz TEK an
+            ctx.moveTo(-wingSpan, tipY); // Sol kanat ucu
+
+            // 2. Sol Kanat Üstü (Uçtan Sırta)
+            this.addBezierCurveToPath(ctx, 
+                -wingSpan, tipY,    // Başlangıç
+                -elbowX, elbowY,    // Kontrol 1 (Dirsek)
+                -10, -5,            // Kontrol 2 (Omuz)
+                0, -2               // Bitiş (Sırt)
+            );
+
+            // 3. Sağ Kanat Üstü (Sırttan Uca)
+            this.addBezierCurveToPath(ctx, 
+                0, -2,
+                10, -5,
+                elbowX, elbowY,
+                wingSpan, tipY      // Sağ Uç
+            );
+
+            // 4. Sağ Kanat Altı (Uçtan Göbeğe)
+            this.addBezierCurveToPath(ctx, 
+                wingSpan, tipY,
+                elbowX, elbowY + 6,
+                10, 5,
+                0, 6                // Göbek Altı
+            );
+
+            // 5. Sol Kanat Altı (Göbekten Başlangıca)
+            // Döngüyü kapatarak şekli tamamlıyoruz
+            this.addBezierCurveToPath(ctx, 
+                0, 6,
+                -10, 5,
+                -elbowX, elbowY + 6,
+                -wingSpan, tipY     // İlk başladığımız noktaya dönüş
+            );
+
+            ctx.closePath(); // Şekli kilitle
+            ctx.fill();      // Tek seferde boya (Leke yok)
+
+            // Kafa (Küçük bir daire)
+            ctx.beginPath();
+            ctx.arc(0, -2, 3.5, 0, Math.PI*2);
+            ctx.fill();
+
+            ctx.restore(); // Ayarları geri yükle
+        }
+    }
+
+    // --- 5. YAPRAKLAR (PARTİKÜL SİSTEMİ) ---
+    class MathPetal {
+        constructor() { this.reset(true); }
+        
+        // Yaprağı rastgele bir özelliklerle oluştur
+        reset(initial) {
+            this.x = Math.random() * width; // Rastgele yatay konum
+            // İlk açılışta ekrana yay, sonra yukarıdan düşür
+            this.y = initial ? Math.random() * height : -20;
+            this.z = Math.random() * 1.5 + 0.5; // Derinlik (Z ekseni simülasyonu)
+            this.size = (Math.random() * 5 + 3) * this.z; // Boyut
+            this.vx = (Math.random() - 0.5) * 0.8 * this.z; // Rüzgar hızı// Hız Z ile çarpılıyor (Paralaks)
+            this.vy = (Math.random() * 0.5 + 0.3) * this.z; // Düşüş hızı
+            this.rotation = Math.random() * Math.PI; // Dönüş açısı
+            
+            // Renk üretimi (Pembe ve açık tonlar)
+            const hue = 340 + Math.random() * 40; 
+            const sat = 20 + Math.random() * 20;  
+            const light = 92 + Math.random() * 5; 
+            const alpha = 0.7 * this.z; // Görünürlük Z ile çarpılıyor (Atmosferik Derinlik)
+            
+            this.color = `hsla(${hue}, ${sat}%, ${light}%, ${alpha})`;
+            this.bend = Math.random() * 4; // Yaprak kıvrımı
+        }
+
+        update() {
+            this.x += this.vx + Math.sin(frameCount*0.01) * 0.5; // Salınarak düş
+            this.y += this.vy; // Aşağı in
+            this.rotation += 0.01; // Dön
+            if(this.y > height) this.reset(); // Ekrandan çıkınca yukarı al
+        }
+
+        draw() {
+            ctx.save();
+            ctx.translate(this.x, this.y);
+            ctx.rotate(this.rotation);
+            ctx.fillStyle = this.color;
+            ctx.beginPath();
+            ctx.moveTo(0, -this.size);
+            // Yaprak şekli için de matematik fonksiyonunu kullanıyoruz
+            // Sol Kenar
+            for (let i = 1; i <= 10; i++) {
+                let t = i / 10;
+                let bx = calculateBezierPoint(t, 0, -this.size - this.bend, -this.size, 0);
+                let by = calculateBezierPoint(t, -this.size, -this.size/2, this.size/2, this.size);
+                ctx.lineTo(bx, by);
+            }
+            // Sağ Kenar
+            for (let i = 1; i <= 10; i++) {
+                let t = i / 10;
+                let bx = calculateBezierPoint(t, 0, this.size, this.size + this.bend, 0);
+                let by = calculateBezierPoint(t, this.size, this.size/2, -this.size/2, -this.size);
+                ctx.lineTo(bx, by);
+            }
+            ctx.fill();
+            ctx.restore();
+        }
+    }
+
+    // --- IŞIK HUZMELERİ (ATMOSFER) ---
+    class Ray {
+        constructor() { 
+            this.x = Math.random() * width; 
+            this.w = Math.random() * 200 + 50; // Genişlik
+            this.s = Math.random() * 0.2; // Hareket hızı
+        }
+        draw() {
+            this.x -= this.s; // Sola kaydır
+            if(this.x < -400) this.x = width + 400; // Döngü sağla
+            ctx.save();
+            ctx.translate(this.x, 0);
+            ctx.rotate(0.35); // Işığı eğ
+            // Işık gradient'i (Uçları şeffaf, ortası parlak)
+            let g = ctx.createLinearGradient(0,0,0,height);
+            g.addColorStop(0, 'rgba(255,255,255,0)');
+            g.addColorStop(0.5, 'rgba(255,255,255,0.06)'); 
+            g.addColorStop(1, 'rgba(255,255,255,0)');
+            ctx.fillStyle = g;
+            ctx.fillRect(-this.w/2, -500, this.w, height*2);
+            ctx.restore();
+        }
+    }
+
+    // --- SETUP (NESNELERİN OLUŞTURULMASI) ---
+    const bird = new MathBird(); // 1 adet kuş
+    const petals = Array.from({length: 120}, () => new MathPetal()); // 120 adet yaprak
+    const rays = Array.from({length: 5}, () => new Ray()); // 5 adet ışık
+
+    // --- ANA ANİMASYON DÖNGÜSÜ (LOOP) ---
+    function animate() {
+        ctx.clearRect(0, 0, width, height); // Her karede ekranı temizle
+        
+        // Kuşun merkeze göre farkını hesapla (Kamera için)
+        let tx = (bird.x - width/2) * 0.8;
+        let ty = (bird.y - height/2) * 0.8;
+        updateCamera(tx, ty); // Kamerayı güncelle
+
+        // Kamera matrix işlemlerini uygula (Zoom/Pan)
+        ctx.save();
+        ctx.translate(width/2, height/2); // Merkezi ortaya al
+        ctx.scale(camera.zoom, camera.zoom); // Yakınlaştır/Uzaklaştır
+        ctx.translate(-width/2 - camera.x, -height/2 - camera.y); // Kaydır
+
+        // Önce ışıkları çiz (Arkada kalsın)
+        rays.forEach(r => r.draw());
+        
+        // Kuşu güncelle ve çiz
+        bird.update();
+        bird.draw();
+
+        // Kadın figürünü çiz
+        if (processedWomanImg) {
+            let h = height * 0.65;
+            let w = (processedWomanImg.width / processedWomanImg.height) * h;
+            ctx.globalAlpha = 0.95; // Çok hafif şeffaflık
+            ctx.drawImage(processedWomanImg, width - w - 40, height - h, w, h);
+            ctx.globalAlpha = 1.0;
+        }
+
+        // Yaprakları en üste çiz
+        petals.forEach(p => { p.update(); p.draw(); });
+        ctx.restore(); // Kamera etkisinden çık
+
+        // Vignette efekti (Kenarları karartma - Atmosfer için)
+        let grad = ctx.createRadialGradient(width/2, height/2, height*0.5, width/2, height/2, height);
+        grad.addColorStop(0, 'transparent');
+        grad.addColorStop(1, 'rgba(220, 215, 210, 0.4)');
+        ctx.fillStyle = grad;
+        ctx.fillRect(0,0, width, height);
+
+        frameCount++; // Kare sayısını artır
+        requestAnimationFrame(animate); // Tarayıcıdan bir sonraki kareyi iste
+    }
+</script>
+</body>
+</html>
